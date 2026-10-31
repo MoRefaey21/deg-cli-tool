@@ -1,35 +1,33 @@
-# Transcriptomic Analysis of B Cells in Multiple Sclerosis: Differential Gene Expression Before and After Apheresis Treatment
+# Differential Gene Expression Command-Line Tool
 
-A Python command-line tool for differential gene expression (DEG) analysis, applied to CD19+ B cells from multiple sclerosis (MS) patients before and after apheresis treatment. Completed as the final project for CIT656: Programming to Bioinformatics, Postgraduate Bioinformatics Diploma at Nile University (2024-2025).
+An interactive Python command-line tool for differential gene expression (DEG) analysis of a gene expression matrix. It selects a suitable statistical test, corrects for multiple testing, computes fold changes, and writes a volcano plot and a tab-separated report. Built as the final project for CIT656: Programming to Bioinformatics, Postgraduate Bioinformatics Diploma at Nile University (2024-2025), and demonstrated on CD19+ B cells from multiple sclerosis (MS) patients before and after apheresis.
 
-**Authors:** Mohammed Ashraf Ahmed, Ahmad Karam Ahmad, Alaa Hamed Mohamed, Omnia Esmail Ebrahim
+**Authors:** Mohammed Refaey, Ahmad Karam Ahmad, Alaa Hamed Mohamed, Omnia Esmail Ebrahim
 
-## Question
+## Features
 
-Therapeutic apheresis (plasma exchange and immunoadsorption) is used to manage acute MS relapses by removing circulating autoantibodies and inflammatory mediators, but its molecular effects on immune cells remain poorly characterized. This project asks how the transcriptomic profile of CD19+ B cells changes between two timepoints in the same patients (immediately before the first apheresis session and immediately after the last), using a paired design to isolate treatment-induced changes from inter-individual variability.
+- **Flexible input:** any tab- or comma-separated matrix with gene IDs in the first column and samples in the others; header and comment lines can be skipped, so GEO series matrix files work directly.
+- **Test selection:** asks whether samples are paired, screens normality with Shapiro-Wilk on a random subset of 200 genes, and picks the test:
 
-## Pipeline
+  | Design | Normal | Non-normal |
+  |---|---|---|
+  | Paired | paired t-test | Wilcoxon signed-rank |
+  | Unpaired | Welch's t-test | Mann-Whitney U |
 
-Input data are pre-processed gene-level expression profiles from GEO accession GSE272973 (Clariom D microarray), restricted to CD19+ B cell samples (3 paired before-and-after pairs). The user supplies the file path, delimiter, header and comment options, and the indices of control and treatment samples. The script then runs an interactive workflow consisting of: automated statistical test selection (the user answers one yes/no question about whether the samples are paired; the appropriate test is then chosen based on pairing structure and a Shapiro-Wilk normality check on a random subset of genes); gene-wise hypothesis testing with a progress bar; fold change and log2 fold change calculation with safe handling of zero-valued controls; DEG extraction by p-value, by fold change, and by their intersection; volcano plot generation (genes coloured only when they meet both the fold change and significance thresholds); and a structured tab-separated report documenting the test selection rationale.
+  The data count as non-normal when more than 30% of the sampled genes reject normality. With fewer than 5 samples per group the check is skipped and the parametric test is used. The test can also be fixed explicitly.
+- **Multiple-testing correction:** Benjamini-Hochberg FDR across all genes; significance is called on q-values, and raw p-values are kept in the report.
+- **Fold change on the right scale:** for log2-scaled input (e.g. RMA-normalized microarrays) log2 FC is the difference of group means; for linear input it is log2 of the ratio of means.
+- **Outputs:** a volcano plot and a report listing genes by FDR, by fold change, and by both, with the analysis settings in the header.
 
-## Results
+## Installation
 
-From 135,750 genes analyzed with the paired t-test on the MS dataset, 7,193 genes met p < 0.05, 102 genes met |FC| > 1.5 (85 over-expressed and 17 under-expressed), and 16 genes met both criteria. The intersection list provides a high-confidence set of B-cell transcriptional changes following apheresis. The volcano plot visualizes the asymmetric pattern of activation over suppression in the post-treatment transcriptome, consistent with a rebound response after the removal of circulating inhibitory factors. The full annotated DEG list and figures are available in the project report PDF.
+```
+git clone https://github.com/MoRefaey21/deg-cli-tool.git
+cd deg-cli-tool
+pip install -r requirements.txt
+```
 
-## Tools
-
-Python 3.7+ with NumPy (data handling and vectorized math), SciPy (hypothesis testing and Shapiro-Wilk normality screening), Matplotlib (volcano plot), and tqdm (progress bars).
-
-## Repository contents
-
-- `differential_gene_expression_analysis.py`: main script
-- `log2_fc.py`: helper for log2 fold change calculation
-- `log10_p.py`: helper for -log10(p-value) calculation
-- `volcano_plot.py`: helper for volcano plot generation
-- `volcano_plot.png`: example output from the MS dataset
-- `DEGs_report.txt`: example annotated DEG report from the MS dataset
-- `Transcriptomic_Analysis_of_B_Cells_in_Multiple_Sclerosis.pdf`: full scientific report
-- `Transcriptomic_Analysis_of_B_Cells_in_Multiple_Sclerosis.pptx`: project presentation
+Requires Python 3.7+ with NumPy, SciPy, Matplotlib and tqdm.
 
 ## Usage
 
@@ -37,8 +35,83 @@ Python 3.7+ with NumPy (data handling and vectorized math), SciPy (hypothesis te
 python differential_gene_expression_analysis.py
 ```
 
-The script will prompt for: data file path, delimiter, header and comment settings, control and treatment column indices, whether the samples are paired, alpha and fold change thresholds, and an output report file name. For the MS dataset used in the project: paired = yes, alpha = 0.05, fold change threshold = 1.5.
+The tool asks a series of questions. Invalid answers to the file and group questions are caught and asked again.
+
+### Input file
+
+- One row per gene, first column the gene ID, remaining columns numeric expression values (one per sample).
+- Tab- or comma-separated. Quotes around gene IDs are removed.
+- Lines at the top of the file (metadata, a header row) can be skipped, and lines starting with a comment symbol are ignored.
+
+### Prompts
+
+| Prompt | What to enter |
+|---|---|
+| File name or path | Path to the expression matrix. |
+| Delimiter | `,` for CSV, or `\t` (backslash, t) for tab-separated files. |
+| Lines to skip | Number of lines at the top of the file to skip, e.g. `1` for a single header row. |
+| Comment symbol | Character that marks lines to ignore (e.g. `!` in GEO series matrices), or Enter for none. |
+| Control / treatment indices | Comma-separated 0-based column numbers, counted after the gene ID column. For paired data, list both groups in the same subject order. |
+| Log2-transformed? | `y` if values are already on a log2 scale (most normalized microarray data), `n` for linear values such as TPM or normalized counts. |
+| Paired? | `y` when the same subjects are measured in both groups. |
+| Test override | Enter to accept the automatic choice, or one of `paired_t`, `wilcoxon`, `welch_t`, `mannwhitney`. |
+| FDR threshold | Maximum q-value for significance (default 0.05). |
+| Fold change threshold | Linear fold change, greater than 1 (default 1.5). Genes with FC >= threshold are over-expressed and FC <= 1/threshold under-expressed. |
+| Report name | File name without extension; `.txt` is added. |
+
+### Example session
+
+A real run on the example dataset below (answers in yellow):
+
+![Data loading and group definition](docs/usage_1_input.png)
+
+![Test selection, results and outputs](docs/usage_2_results.png)
+
+### Outputs
+
+**`volcano_plot.png`**: log2 fold change against -log10 raw p-value. Genes are coloured only when they pass both the FDR and fold change thresholds (orange: over-expressed, blue: under-expressed); the dashed vertical lines mark the fold change threshold, and the dashed horizontal line marks the largest p-value still called significant (drawn only if any gene is significant).
+
+**`<name>.txt`**: a header with the settings and counts, then three tab-separated tables: genes passing FDR, genes passing fold change, and genes passing both. Columns:
+
+| Column | Meaning |
+|---|---|
+| `Gene_ID` | ID from the first column of the input |
+| `FC`, `log2FC` | Fold change of treatment over control |
+| `P_value` | Raw p-value of the selected test |
+| `FDR_q_value` | Benjamini-Hochberg adjusted p-value |
+| `Test_statistic` | Statistic of the selected test (for t-tests, positive means the control mean is higher) |
+| `Change_Type` | Over-expressed, Under-expressed, or Within FC thresholds |
+
+Rows from the example report:
+
+```
+Gene_ID              FC        log2FC     P_value    FDR_q_value  Test_statistic  Change_Type
+TC0100006436.hg.1    0.587254  -0.767943  0.0507728  0.905412     4.26716         Under-expressed
+TC0100006441.hg.1    1.56306   0.644377   0.359824   0.908767     -1.17849        Over-expressed
+```
+
+## Example: B cells in MS before and after apheresis
+
+The example outputs in this repository (`DEGs_report.txt`, `volcano_plot.png`) come from GEO **GSE272973** (Clariom D microarray, RMA-normalized log2 values, 135,750 transcript clusters), using the CD19+ B cell samples of 3 patients taken before the first and after the last apheresis session.
+
+To reproduce, download `GSE272973_series_matrix.txt.gz` from GEO, unzip it, and answer: delimiter `\t`, lines to skip `86`, comment symbol `!`, control `0,4,8`, treatment `1,5,9`, log2 `y`, paired `y`, test override Enter, FDR `0.05`, fold change `1.5`.
+
+**Result.** The paired t-test was selected. No gene passed FDR < 0.05 (the lowest q-value is about 0.5). 7,193 genes had raw p < 0.05, about what chance alone gives across 135,750 tests (around 6,800), and the 19,265 genes with |FC| > 1.5 split almost evenly between up (9,937) and down (9,328). With only three patient pairs the design has little power, so this example shows the tool working end to end on real data rather than a biological finding about apheresis.
+
+## Limitations
+
+- Gene-wise tests do not share information across genes the way limma or DESeq2 do, so small studies have low power.
+- Covariates (age, sex, batch) cannot be modelled.
+- RNA-seq counts should be normalized and log-transformed before use (e.g. log2 CPM), then analysed with log2 = `y`.
+
+## Repository contents
+
+- `differential_gene_expression_analysis.py`: main script
+- `log2_fc.py`, `log10_p.py`, `volcano_plot.py`: helper functions
+- `DEGs_report.txt`, `volcano_plot.png`: example outputs (GSE272973)
+- `docs/`: screenshots of an example session
+- `requirements.txt`, `LICENSE`, `.gitignore`
 
 ## Data
 
-The dataset is publicly available from GEO under accession **GSE272973**. The B cell subset comprises 6 samples (3 paired pre-apheresis and 3 paired post-apheresis). The script accepts any tab- or comma-separated expression matrix with gene IDs in the first column and sample expression values in the remaining columns. The raw data file is not included in this repository.
+GSE272973 is publicly available from GEO and is not included in this repository.

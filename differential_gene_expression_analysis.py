@@ -17,12 +17,15 @@ Features
 - Automatic statistical test selection:
     - Paired + normal     -> paired t-test
     - Paired + non-normal -> Wilcoxon signed-rank
-    - Unpaired + normal   -> independent t-test
+    - Unpaired + normal   -> Welch's t-test (unequal variances)
     - Unpaired + non-normal -> Mann-Whitney U
 - Shapiro-Wilk normality screening on a randomly sampled subset of genes
-- Fold change and log2 fold change with safe handling of zero or negative
-  control means
-- Volcano plot (genes coloured only when they meet BOTH FC and p thresholds)
+- Benjamini-Hochberg FDR correction across all tested genes; significance is
+  called on the adjusted p-value (q-value), not the raw p-value
+- Fold change and log2 fold change. If the input is already log2-scaled
+  (e.g. RMA-normalized microarray data) log2 FC is the difference of group
+  means; otherwise it is log2 of the ratio of group means
+- Volcano plot (genes coloured only when they meet BOTH FC and FDR thresholds)
 - Tab-separated DEG report documenting the test selection rationale
 
 Requirements
@@ -35,7 +38,8 @@ The script will prompt for:
 - Data file path and format parameters
 - Indices of control and treatment columns (0-based)
 - Whether the samples are paired
-- Significance thresholds for p-value and fold change
+- Whether the expression values are already log2-transformed
+- Significance threshold (FDR) and fold change threshold
 - Output report file name
 """
 
@@ -60,7 +64,7 @@ print("3. Based on the pairing structure and a normality check on a subset of")
 print("   genes, the appropriate statistical test is selected automatically:")
 print("   - Paired   + normal     -> paired t-test")
 print("   - Paired   + non-normal -> Wilcoxon signed-rank")
-print("   - Unpaired + normal     -> independent t-test")
+print("   - Unpaired + normal     -> Welch's t-test")
 print("   - Unpaired + non-normal -> Mann-Whitney U\n")
 
 
@@ -76,7 +80,10 @@ while True:
         delimiter = input(
             "Enter the file delimiter (e.g. ',' for CSV, '\\t' for tab-separated files): "
         ).replace("\\t", "\t").strip()
-        skip_header = int(input("Enter 1 to skip the file header, 0 to keep it: ").strip())
+        skip_header = int(input(
+            "Enter the number of lines to skip at the top of the file "
+            "(1 for a single header row, 0 for none): "
+        ).strip())
         comments_input = input(
             "Enter the comment symbol to skip (press Enter if none): "
         ).strip()
@@ -107,7 +114,7 @@ while True:
 # =====================================================================
 # Gene IDs and expression values
 # =====================================================================
-gene_ids = GE_data[:, 0]
+gene_ids = np.char.strip(GE_data[:, 0], '"')
 print(f"Extracted {len(gene_ids)} gene IDs.\n")
 
 try:
@@ -153,6 +160,17 @@ while True:
 
 control_values  = expression_values[:, control_group]
 treatment_values = expression_values[:, treatment_group]
+
+# Fold change is only meaningful on the linear scale. Microarray series
+# matrices (RMA output) are normally log2-scaled, so ask rather than assume.
+while True:
+    log_input = input(
+        "Are the expression values already log2-transformed? (y/n): "
+    ).strip().lower()
+    if log_input in ("y", "n"):
+        is_log2 = log_input == "y"
+        break
+    print("Please enter 'y' or 'n'.")
 
 
 # =====================================================================
@@ -246,9 +264,23 @@ if is_paired and is_normal:
 elif is_paired and not is_normal:
     test_type = "wilcoxon"
 elif not is_paired and is_normal:
-    test_type = "independent_t"
+    test_type = "welch_t"
 else:
     test_type = "mannwhitney"
+
+# Optional override, so that a pre-specified analysis plan can fix the test
+# instead of letting the normality screen choose it.
+override = input(
+    "Test override (Enter for automatic, or paired_t / wilcoxon / welch_t / "
+    "mannwhitney): "
+).strip().lower()
+if override:
+    if override not in ("paired_t", "wilcoxon", "welch_t", "mannwhitney"):
+        raise SystemExit(f"Unknown test '{override}'.")
+    if override in ("paired_t", "wilcoxon") and len(control_group) != len(treatment_group):
+        raise SystemExit("Paired tests need equally sized groups.")
+    test_type = override
+    normality_note += f" Test fixed by the user: {test_type}."
 
 print(f"\nSelected test: {test_type}\n")
 
@@ -258,7 +290,7 @@ print(f"\nSelected test: {test_type}\n")
 # =====================================================================
 test_funcs = {
     "paired_t":    stat.ttest_rel,
-    "independent_t": stat.ttest_ind,
+    "welch_t":     lambda a, b: stat.ttest_ind(a, b, equal_var=False),
     "wilcoxon":    stat.wilcoxon,
     "mannwhitney": stat.mannwhitneyu,
 }
@@ -275,9 +307,25 @@ for i in tqdm.tqdm(range(n_genes), desc=f"Running {test_type}"):
     except Exception:
         pass
 
+def benjamini_hochberg(p):
+    """Return BH-adjusted p-values (q-values); NaN inputs stay NaN."""
+    q = np.full(p.shape, np.nan)
+    valid = np.where(~np.isnan(p))[0]
+    order = valid[np.argsort(p[valid])]
+    m = len(order)
+    ranked = p[order] * m / np.arange(1, m + 1)
+    # enforce monotonicity from the largest p-value downwards
+    q[order] = np.minimum(np.minimum.accumulate(ranked[::-1])[::-1], 1.0)
+    return q
+
+
+q_values = benjamini_hochberg(p_values)
+
 n_significant = int(np.sum(p_values < 0.05))
+n_significant_fdr = int(np.sum(q_values < 0.05))
 print(f"\n{test_type} completed.")
-print(f"Number of genes with raw p < 0.05: {n_significant}\n")
+print(f"Number of genes with raw p < 0.05: {n_significant}")
+print(f"Number of genes with FDR (BH) q < 0.05: {n_significant_fdr}\n")
 
 
 # =====================================================================
@@ -289,10 +337,15 @@ mean_control   = np.mean(control_values,  axis=1)
 mean_treatment = np.mean(treatment_values, axis=1)
 
 with np.errstate(divide="ignore", invalid="ignore"):
-    fold_change_array      = np.where(mean_control > 0,
-                                      mean_treatment / mean_control,
-                                      np.nan)
-    log2_fold_change_array = log2_fc(fold_change_array)
+    if is_log2:
+        # difference of log2 means = log2 of the ratio of geometric means
+        log2_fold_change_array = mean_treatment - mean_control
+        fold_change_array      = 2.0 ** log2_fold_change_array
+    else:
+        fold_change_array      = np.where(mean_control > 0,
+                                          mean_treatment / mean_control,
+                                          np.nan)
+        log2_fold_change_array = log2_fc(fold_change_array)
 
 n_with_fc    = int(np.sum(~np.isnan(fold_change_array)))
 n_without_fc = int(np.sum( np.isnan(fold_change_array)))
@@ -305,7 +358,7 @@ print(f"  Genes skipped (zero or negative control mean): {n_without_fc}\n")
 # =====================================================================
 print("=== DEGs Extraction ===")
 try:
-    alpha = float(input("Enter alpha (standard: 0.05): "))
+    alpha = float(input("Enter FDR threshold for q-values (standard: 0.05): "))
     fc_threshold = float(input("Enter fold change threshold (standard: 1.5): "))
     if not (0 < alpha < 1):
         raise ValueError("Alpha must be between 0 and 1.")
@@ -318,7 +371,8 @@ except ValueError as e:
 
 down_threshold = 1.0 / fc_threshold
 
-DEGs_pvalue_indices = np.where(p_values < alpha)[0]
+DEGs_pvalue_indices = np.where(q_values < alpha)[0]
+n_raw_p = int(np.sum(p_values < alpha))
 
 with np.errstate(invalid="ignore"):
     fc_up   = fold_change_array >= fc_threshold
@@ -330,7 +384,8 @@ DEGs_overlap_indices = np.intersect1d(DEGs_pvalue_indices, DEGs_fc_indices)
 over_expressed  = int(np.sum(fc_up))
 under_expressed = int(np.sum(fc_down))
 
-print(f"  Total DEGs by p-value: {len(DEGs_pvalue_indices)}")
+print(f"  Genes with raw p < {alpha} (uncorrected, for reference): {n_raw_p}")
+print(f"  Total DEGs by FDR q-value: {len(DEGs_pvalue_indices)}")
 print(f"  Total DEGs by fold change: {len(DEGs_fc_indices)}")
 print(f"  Over-expressed (FC threshold): {over_expressed}")
 print(f"  Under-expressed (FC threshold): {under_expressed}")
@@ -358,6 +413,7 @@ volcano_plot(
     log2fc_threshold=np.log2(fc_threshold),
     xlim=(-x_bound * 1.1, x_bound * 1.1),
     ylim=(0, y_bound * 1.1),
+    significant=(q_values < alpha),
     alpha=alpha,
 )
 
@@ -386,6 +442,7 @@ def _row(i):
         f"{fold_change_array[i]:.6g}\t"
         f"{log2_fold_change_array[i]:.6g}\t"
         f"{p_values[i]:.6g}\t"
+        f"{q_values[i]:.6g}\t"
         f"{test_statistic[i]:.6g}\t"
         f"{_classify(i)}\n"
     )
@@ -399,18 +456,20 @@ try:
         report.write(f"# Paired analysis: {is_paired}\n")
         report.write(f"# Normality assessment: {normality_note}\n")
         report.write(f"# Statistical test selected: {test_type}\n")
-        report.write(f"# Alpha: {alpha}\n")
+        report.write(f"# Input log2-transformed: {is_log2}\n")
+        report.write(f"# FDR (Benjamini-Hochberg) threshold: {alpha}\n")
         report.write(f"# Fold change threshold: {fc_threshold}\n")
         report.write(f"# Total genes analyzed: {len(gene_ids)}\n")
-        report.write(f"# DEGs by p-value: {len(DEGs_pvalue_indices)}\n")
+        report.write(f"# Genes with raw p < {alpha} (uncorrected): {n_raw_p}\n")
+        report.write(f"# DEGs by FDR q-value: {len(DEGs_pvalue_indices)}\n")
         report.write(f"# DEGs by fold change: {len(DEGs_fc_indices)}\n")
         report.write(f"# Over-expressed (FC): {over_expressed}\n")
         report.write(f"# Under-expressed (FC): {under_expressed}\n")
         report.write(f"# Overlapping DEGs: {len(DEGs_overlap_indices)}\n\n")
 
-        header = "Gene_ID\tFC\tlog2FC\tP_value\tTest_statistic\tChange_Type\n"
+        header = "Gene_ID\tFC\tlog2FC\tP_value\tFDR_q_value\tTest_statistic\tChange_Type\n"
 
-        report.write("## DEGs by p-value\n")
+        report.write("## DEGs by FDR q-value\n")
         report.write(header)
         for i in DEGs_pvalue_indices:
             report.write(_row(i))

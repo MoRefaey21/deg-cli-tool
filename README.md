@@ -2,7 +2,9 @@
 
 An interactive Python command-line tool for differential gene expression (DEG) analysis of a gene expression matrix. It selects a suitable statistical test, corrects for multiple testing, computes fold changes, and writes a volcano plot and a tab-separated report. Built as the final project for CIT656: Programming to Bioinformatics, Postgraduate Bioinformatics Diploma at Nile University (2024-2025), and demonstrated on CD19+ B cells from multiple sclerosis (MS) patients before and after apheresis.
 
-**Authors:** Mohammed Refaey, Ahmad Karam Ahmad, Alaa Hamed Mohamed, Omnia Esmail Ebrahim
+**Author:** Mohammed Refaey
+
+Started as a four-person final project for CIT656 with Ahmad Karam Ahmad, Alaa Hamed Mohamed and Omnia Esmail Ebrahim. The current tool was rebuilt by Mohammed Refaey in 2026, with the agreement of the original team.
 
 ## Features
 
